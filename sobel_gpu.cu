@@ -3,6 +3,7 @@
 // sobel_gpu.cpp
 // usage:
 //      sobel_gpu [no args, all is hard coded]
+// Optional launch controls: sobel_gpu [-N threads_per_block] [-B blocks]
 //
 
 #include <iostream>
@@ -11,6 +12,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
+#include <limits.h>
 
 // see https://en.wikipedia.org/wiki/Sobel_operator
 
@@ -64,6 +67,21 @@ sobel_filtered_pixel(float *s, int i, int j , int ncols, int nrows, float *gx, f
    // ADD CODE HERE:  add your code here for computing the sobel stencil computation at location (i,j)
    // of input s, returning a float
 
+   // Leave the outermost output rows and columns zero.
+   if (i > 0 && i < nrows-1 && j > 0 && j < ncols-1)
+   {
+      float sum_x=0.0, sum_y=0.0;
+      for (int row=-1; row<=1; row++)
+         for (int col=-1; col<=1; col++)
+         {
+            int weight=(row+1)*3 + col+1;
+            float pixel=s[(i+row)*ncols + j+col];
+            sum_x += pixel * gx[weight];
+            sum_y += pixel * gy[weight];
+         }
+      t = sqrt(sum_x*sum_x + sum_y*sum_y);
+   }
+
    return t;
 }
 
@@ -95,6 +113,14 @@ sobel_kernel_gpu(float *s,  // source image pixels
 
    // because this is CUDA, you need to use CUDA built-in variables to compute an index and stride
    // your processing motif will be very similar here to that we used for vector add in Lab #2
+   size_t index=(size_t)blockIdx.x*blockDim.x + threadIdx.x;
+   size_t stride=(size_t)blockDim.x*gridDim.x;
+   for (; index < (size_t)n; index+=stride)
+   {
+      int i=index/ncols;
+      int j=index%ncols;
+      d[index] = sobel_filtered_pixel(s, i, j, ncols, nrows, gx, gy);
+   }
 }
 
 int
@@ -151,8 +177,11 @@ main (int ac, char *av[])
 
    cudaMemPrefetchAsync((void *)in_data_floats, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
    cudaMemPrefetchAsync((void *)out_data_floats, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
-   cudaMemPrefetchAsync((void *)device_gx, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
-   cudaMemPrefetchAsync((void *)device_gy, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
+   // Prefetch the nine filter weights.
+   // cudaMemPrefetchAsync((void *)device_gx, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
+   // cudaMemPrefetchAsync((void *)device_gy, nvalues * sizeof(float), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
+   cudaMemPrefetchAsync((void *)device_gx, sizeof(Gx), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
+   cudaMemPrefetchAsync((void *)device_gy, sizeof(Gy), (struct cudaMemLocation){cudaMemLocationTypeDevice, deviceID}, 0);
 
 #if 0 // older, pre CUDA 14.3.2
    cudaMemPrefetchAsync((void *)in_data_floats, nvalues*sizeof(float), deviceID);
@@ -166,6 +195,29 @@ main (int ac, char *av[])
 
    // ADD CODE HERE: insert your code here to set a different number of thread blocks or # of threads per block
 
+   int option;
+   while ((option=getopt(ac, av, "N:B:")) != -1)
+   {
+      if (option != 'N' && option != 'B')
+      {
+         fprintf(stderr, "Usage: %s [-N threads_per_block] [-B blocks]\n", av[0]);
+         return 1;
+      }
+      char *end;
+      long value=strtol(optarg, &end, 10);
+      if (*end != '\0' || value <= 0 || value > INT_MAX || (option == 'N' && value > 1024))
+      {
+         fprintf(stderr, "Invalid value for -%c: %s\n", option, optarg);
+         return 1;
+      }
+      if (option == 'N') nThreadsPerBlock=value;
+      else nBlocks=value;
+   }
+   if (optind != ac)
+   {
+      fprintf(stderr, "Usage: %s [-N threads_per_block] [-B blocks]\n", av[0]);
+      return 1;
+   }
 
 
    printf(" GPU configuration: %d blocks, %d threads per block \n", nBlocks, nThreadsPerBlock);
