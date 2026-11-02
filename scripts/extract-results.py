@@ -48,10 +48,9 @@ def profile(path, implementation):
     text = path.read_text(encoding="utf-8-sig")
     check_errors(text, path)
     rows = [[cell.strip() for cell in row] for row in csv.reader(io.StringIO(text))]
-    headers = [i for i, row in enumerate(rows)
-               if "Kernel Name" in row and
-               (all(metric in row for metric in METRICS) or
-                all(name in row for name in ("Metric Name", "Metric Unit", "Metric Value")))]
+    # Recognize the layout independently of metric availability. A saved report
+    # can have a valid header while omitting a metric requested by HW5.
+    headers = [i for i, row in enumerate(rows) if "ID" in row and "Kernel Name" in row]
     require(len(headers) == 1, f"{path}: expected one NCU raw CSV header")
     start = headers[0]
     header = rows[start]
@@ -59,6 +58,8 @@ def profile(path, implementation):
     values = {}
     launches = set()
     if "Metric Name" in header:
+        require(all(name in header for name in ("Metric Unit", "Metric Value")),
+                f"{path}: missing NCU metric unit/value columns")
         for record in records:
             kernel = record["Kernel Name"]
             if not kernel:
@@ -69,6 +70,8 @@ def profile(path, implementation):
                 require(metric not in values, f"{path}: duplicate metric {metric}")
                 values[metric] = (record["Metric Unit"], number(record["Metric Value"]))
     else:
+        missing = [metric for metric in METRICS if metric not in header]
+        require(not missing, f"{path}: missing required metrics: {', '.join(missing)}")
         units = [record for record in records if not record["Kernel Name"] and record.get(TIME)]
         data = [record for record in records if record["Kernel Name"]]
         require(len(units) == 1 and len(data) == 1, f"{path}: expected one units row and one kernel row")
@@ -79,7 +82,8 @@ def profile(path, implementation):
     kernel = next(iter(launches))[1]
     expected = "sobel_kernel_gpu" if implementation == "cuda" else "do_sobel_filtering"
     require(expected in kernel, f"{path}: wrong kernel {kernel!r}")
-    require(set(values) == set(METRICS), f"{path}: missing required metrics")
+    missing = [metric for metric in METRICS if metric not in values]
+    require(not missing, f"{path}: missing required metrics: {', '.join(missing)}")
     unit, duration = values[TIME]
     unit = unit.replace("µ", "u").replace("μ", "u")
     require(unit in TIME_TO_MS and duration > 0, f"{path}: invalid runtime/unit {duration} {unit!r}")

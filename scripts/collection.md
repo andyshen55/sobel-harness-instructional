@@ -34,6 +34,8 @@ profiles offload once with automatic team/thread selection. NCU filters select
 the computation kernel; raw CSVs, binary reports and application logs are saved
 separately. CUDA images must match the first CUDA baseline; the offload image is
 saved and checked separately under the agreed cross-implementation byte policy.
+Each CSV is checked for the correct kernel, all three required metrics and valid
+units immediately after profiling. A failed check stops the remaining sweep.
 An EXIT handler resumes DCGM, including after normal profiling failures.
 `gpu/COMPLETE` requires the full run set and a successful resume command.
 
@@ -43,8 +45,8 @@ per profile, and the three exact metrics. It rejects missing/duplicate results,
 unknown units, non-finite values and profiler errors. Decimal arithmetic converts
 time to ms while preserving available digits. The output is five CPU rows,
 42 CUDA rows and one offload row, each pointing to its raw evidence. Its
-`--check-profile` mode validates an exported existing report without making a
-new measurement.
+`--check-profile` mode validates one raw CSV without making a new measurement.
+The GPU collector uses that mode after each profile.
 
 **Offline tests:** run the collectors against temporary synthetic Slurm/NCU
 tools and images. They test exact loop coverage, unit/precision handling, CSV
@@ -89,7 +91,7 @@ them manually:
 ```bash
 git add scripts/collect-cpu.sbatch scripts/collect-gpu.sbatch \
     scripts/extract-results.py scripts/test-collection.py scripts/collection.md
-git commit -m "Add HW5 collection scripts"
+git commit -m "Validate collected NCU metrics"
 git push origin master
 ```
 
@@ -130,25 +132,28 @@ The C++/CUDA implementations verified at `f17f750` are unchanged by adding these
 scripts, so their existing verified build can be reused. All three executables
 must exist. Keep the printed collection path for download later.
 
-## 3. Check NCU CSV format using an existing report
+## 3. Metric validation during collection
 
-This imports an already collected report on the login node; it does not launch
-the application or collect another GPU measurement. Check the actual installed
-NCU export before submitting the production sweep.
+The first required CUDA configuration (`-N 32 -B 1`) also checks the installed
+NCU output before the sweep continues. The collector explicitly requests the
+three metrics listed above and immediately validates the resulting CSV. This
+adds no profiling run. The same validation follows every later CUDA/offload
+profile, with results saved as `*.metric-check.txt`. A missing metric or invalid
+format stops collection, resumes DCGM and leaves `gpu/COMPLETE` absent. Preserve
+the failure logs and resolve the problem before starting a fresh collection.
 
-```bash
-module load PrgEnv-nvidia
-ncu --import "$SCRATCH/hw5-verify.3CWG57/logs/offload-smoke-f17f750.ncu-rep" \
-    --page raw --csv --print-units base --print-fp \
-    --log-file "$HW5_COLLECTION_DIR/offload-format-check.csv"
-python3 "$HW5_TOOLS_DIR/extract-results.py" \
-    --check-profile "$HW5_COLLECTION_DIR/offload-format-check.csv" --kernel offload
-```
+The existing offload diagnostic report was collected with `--set detailed`
+without explicitly requesting these metrics. Its November 2 export is valid
+wide CSV (3 rows, 1,026 columns), with a 505,408 ns duration and 55.26% achieved
+occupancy, but lacks `dram__throughput.avg.pct_of_peak_sustained_elapsed`.
+It cannot pass the three-metric check or serve as the production preflight.
+Keep `offload-format-check.csv` as diagnostic evidence; do not repeat that gate
+before submission or substitute another metric. The extractor accepts both
+metric-row and metric-column layouts and now reports missing metrics directly.
 
-Expected: the Sobel offload kernel and all three required metrics, with runtime
-converted to ms (approximately 0.50541 for this diagnostic report). If this check
-fails, retain the CSV and resolve its format/metric issue before submission.
-The extractor accepts NCU's metric-row and transposed metric-column CSV layouts.
+An already created collection root can be reused if it contains only this
+diagnostic CSV and has no `cpu/` or `gpu/` directory yet. Otherwise choose a fresh
+root as in step 2. Do not remove existing measurements to reuse a path.
 
 ## 4. Submit CPU, then GPU with a dependency
 

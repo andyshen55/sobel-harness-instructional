@@ -107,6 +107,11 @@ profile()
     fi
     [[ -s $prefix.csv && -s $prefix.ncu-rep ]]
     grep -Fq 'Wrote the output file ../data/processed-raw-int8-4x-cpu.dat' "$prefix.stdout.log"
+    implementation=cuda
+    [[ $case_name != offload ]] || implementation=offload
+    python3 "$repo_dir/scripts/extract-results.py" \
+        --check-profile "$prefix.csv" --kernel "$implementation" \
+        > "$prefix.metric-check.txt"
 }
 
 check_image()

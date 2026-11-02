@@ -78,6 +78,8 @@ elif tool == 'ncu' and '--version' not in args:
         writer = csv.writer(stream)
         writer.writerow(['ID', 'Kernel Name', 'Metric Name', 'Metric Unit', 'Metric Value'])
         for metric, unit, val in zip(metrics, ['nsecond', '%', '%'], ['123,456.789123', '12.345678901234', '23.456789012345']):
+            if os.environ.get('OMIT_DRAM_CASE') == name and metric.startswith('dram__'):
+                continue
             writer.writerow(['0', kernel, metric, unit, val])
     prefix.with_suffix('.ncu-rep').write_bytes(b'SYNTHETIC REPORT, NOT A MEASUREMENT')
     if name.startswith('cuda-'):
@@ -109,6 +111,8 @@ class CollectionTests(unittest.TestCase):
         self.calls = self.root / "calls.jsonl"
         for name in ("sobel_cpu.cpp", "sobel_gpu.cu", "sobel_cpu_omp_offload.cpp", "CMakeLists.txt"):
             shutil.copy2(REPO / name, self.repo / name)
+        (self.repo / 'scripts').mkdir()
+        shutil.copy2(SCRIPTS / 'extract-results.py', self.repo / 'scripts/extract-results.py')
         (self.repo / "data").mkdir()
         (self.repo / "data/zebra-gray-int8-4x").write_bytes(b"synthetic input")
         (self.build / "CMakeCache.txt").write_text("synthetic build\n")
@@ -193,6 +197,15 @@ class CollectionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.results / 'gpu/COMPLETE').exists())
 
+    def test_missing_metric_stops_first_profile_and_resumes_dcgm(self):
+        self.assertEqual(self.run_job('cpu').returncode, 0)
+        result = self.run_job('gpu', OMIT_DRAM_CASE='cuda-N32-B1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('missing required metrics: dram__throughput', result.stdout)
+        self.assertEqual([event['name'] for event in self.events('profile')], ['cuda-N32-B1'])
+        self.assertEqual([event['operation'] for event in self.events('dcgm')], ['pause', 'resume'])
+        self.assertFalse((self.results / 'gpu/COMPLETE').exists())
+
     def test_wide_csv_and_invalid_metrics(self):
         path = self.root / 'wide.csv'
         with path.open('w') as stream:
@@ -225,6 +238,18 @@ class CollectionTests(unittest.TestCase):
         path.write_text(original + '==ERROR== failed counter collection\n')
         with self.assertRaisesRegex(ValueError, 'error marker'):
             extractor.profile(path, 'cuda')
+
+    def test_saved_detailed_report_missing_dram_has_precise_error(self):
+        # Target export: valid wide CSV, ns timing and occupancy, but no exact
+        # HW5 DRAM metric. Never substitute an available overview metric.
+        path = self.root / 'saved-detailed.csv'
+        with path.open('w') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['ID', 'Kernel Name', extractor.TIME, extractor.OCCUPANCY])
+            writer.writerow(['', '', 'ns', '%'])
+            writer.writerow(['0', 'nvkernel__Z18do_sobel_filteringPfS_ii_F1L114_2', '505,408.00', '55.26'])
+        with self.assertRaisesRegex(ValueError, 'missing required metrics: dram__throughput'):
+            extractor.profile(path, 'offload')
 
 
 if __name__ == '__main__':
